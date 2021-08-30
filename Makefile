@@ -20,18 +20,18 @@ examples-clean:
 		$(MAKE) -C $$example clean || exit 1; \
 	done
 
-prepare-for-rootfs: examples
+prepare-for-rootfs:
 	@echo "Copying example CA and TA binaries to $(OUTPUT_DIR)..."
 	@mkdir -p $(OUTPUT_DIR)
 	@mkdir -p $(OUTPUT_DIR)/ta
 	@mkdir -p $(OUTPUT_DIR)/ca
 	@mkdir -p $(OUTPUT_DIR)/plugins
 	@for example in $(EXAMPLE_LIST); do \
-		if [ -e $$example/host/optee_example_$$example ]; then \
+		if [ -e "$$example/host/optee_example_$$example" ]; then \
 			cp -p $$example/host/optee_example_$$example $(OUTPUT_DIR)/ca/; \
 		fi; \
 		cp -pr $$example/ta/*.ta $(OUTPUT_DIR)/ta/; \
-		if [ $$example == plugins ]; then \
+		if [ $$example = plugins ]; then \
 			cp -p plugins/syslog/*.plugin $(OUTPUT_DIR)/plugins/; \
 		fi; \
 	done
