@@ -103,7 +103,7 @@ int main(void)
         printf("Console interrupt registered.\n");
     } else if (c == 'd') {
         printf("Invoking PTA to disable console interrupt.\n");
-        enableInterrupt(&sess, &err_origin);
+        disableInterrupt(&sess, &err_origin);
         printf("Console interrupt disabled.\n");
     } else {
         printf("Wrong option.");
