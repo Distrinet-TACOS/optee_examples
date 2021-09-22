@@ -35,6 +35,7 @@ prepare-for-rootfs:
 			cp -p plugins/syslog/*.plugin $(OUTPUT_DIR)/plugins/; \
 		fi; \
 	done
+	@cp -p console-split/console-split.ko $(OUTPUT_DIR)/ca/
 
 prepare-for-rootfs-clean:
 	@rm -rf $(OUTPUT_DIR)/ta
