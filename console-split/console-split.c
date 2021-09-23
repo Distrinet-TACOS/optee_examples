@@ -10,6 +10,9 @@
 #include <linux/kfifo.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
+#include <linux/irqdomain.h>
+#include <linux/of_irq.h>
+#include <linux/platform_device.h>
 
 #define DRIVER_NAME "Normal world split driver"
 
@@ -19,8 +22,11 @@ static const uuid_t pta_id = UUID_INIT(0x661b512b, 0x53a3, 0x4cec, 0xa8, 0xfe,
 enum command { READ_CHAR, REGISTER_ITR, UNREGISTER_ITR };
 
 static struct split_dev {
+	dev_t devt;
+	struct cdev cdev;
 	struct tee_context *ctx;
 	u32 sess_id;
+	u32 irq_line;
 } dev_data;
 
 DEFINE_KFIFO(buffer, char, 256);
@@ -80,7 +86,7 @@ static int enableInterrupt(void)
 	int ret = 0;
 	struct tee_ioctl_invoke_arg inv_arg;
 	struct tee_param param[4];
-
+	
 	memset(&inv_arg, 0, sizeof(inv_arg));
 	memset(&param, 0, sizeof(param));
 
@@ -102,10 +108,10 @@ static int enableInterrupt(void)
 	pr_info("Interrupt registered.\n");
 	pr_info("Notification value: %llx.\n", inv_arg.params[0].a);
 
-	ret = request_threaded_irq(64, notif_irq_handler, NULL, 0,
-				   "optee_notification", NULL);
+	ret = request_threaded_irq(dev_data.irq_line, notif_irq_handler, NULL, 0,
+				   "console-split", NULL);
 	if (ret) {
-		pr_alert("Error requesting irq: %i\n", ret);
+		pr_err("Error requesting irq: %i\n", ret);
 	} else {
 		pr_info("IRQ thread registered successfully.\n");
 	}
@@ -191,11 +197,116 @@ static int destroy_context(void)
 	return 0;
 }
 
+static int optee_probe(struct platform_device *pdev)
+{
+	const unsigned int spi_base = 32;
+	struct irq_fwspec fwspec;
+	struct device_node *np;
+	u32 irq;
+
+	pr_info("Probing...\n");
+
+	np = of_irq_find_parent(pdev->dev.of_node);
+	fwspec.fwnode = of_node_to_fwnode(np);
+	fwspec.param_count = 3;
+	fwspec.param[0] = 0; // SPI
+	fwspec.param[1] = 260 - spi_base; // Hardware irq - SPI base
+	fwspec.param[2] = IRQ_TYPE_LEVEL_HIGH;
+
+	irq = irq_create_fwspec_mapping(&fwspec);
+	if (!irq) {
+		return -EINVAL;
+	}
+
+	pr_info("IRQ line: %u\n", irq);
+	dev_data.irq_line = irq;
+
+	enableInterrupt();
+
+	return 0;
+}
+
+static int optee_remove(struct platform_device *pdev)
+{
+	disableInterrupt();
+
+	return 0;
+}
+
+static const struct of_device_id optee_dt_match[] = {
+	{ .compatible = "linaro,optee-tz" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, optee_dt_match);
+
+static struct platform_driver optee_driver = {
+	.probe  = optee_probe,
+	.remove = optee_remove,
+	.driver = {
+		.name = "console-split",
+		.of_match_table = optee_dt_match,
+	},
+};
+
+static int device_open(struct inode *inode, struct file *filp)
+{
+	create_session();
+	return 0;
+}
+
+static int device_release(struct inode *inode, struct file *filp)
+{
+	destroy_context();
+	return 0;
+}
+
+static int device_read(struct file *filp, char __user *buf, size_t count,
+		       loff_t *offp);
+
+static const struct file_operations fops = { .open = device_open,
+					     .release = device_release };
+
+static int register_device(void)
+{
+	int ret;
+	ret = alloc_chrdev_region(&dev_data.devt, 0, 1, "console-split");
+	if (ret < 0) {
+		pr_err("Allocating device number failed with error: %x\n", ret);
+		return ret;
+	}
+
+	cdev_init(&dev_data.cdev, &fops);
+	dev_data.cdev.owner = THIS_MODULE;
+
+	ret = cdev_add(&dev_data.cdev, dev_data.devt, 1);
+	if (ret < 0) {
+		pr_err("Adding device number failed with error: %x\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int unregister_device(void)
+{
+	unregister_chrdev_region(dev_data.devt, 1);
+	cdev_del(&dev_data.cdev);
+
+	return 0;
+}
+
 static int __init hello_init(void)
 {
+	int ret;
+
 	pr_info("Hello, world\n");
-	create_session();
-	enableInterrupt();
+
+	pr_info("Registering platform driver.\n");
+	ret = platform_driver_register(&optee_driver);
+	if (ret < 0) {
+		pr_err("Registering platform driver failed: %x", ret);
+	}
+	register_device();
 
 	return 0;
 }
@@ -203,8 +314,8 @@ static int __init hello_init(void)
 static void __exit hello_exit(void)
 {
 	pr_info("Goodbye, cruel world\n");
-	disableInterrupt();
-	destroy_context();
+	
+	unregister_device();
 }
 
 module_init(hello_init);
