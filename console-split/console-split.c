@@ -16,28 +16,20 @@
 static const uuid_t pta_id = UUID_INIT(0x661b512b, 0x53a3, 0x4cec, 0xa8, 0xfe,
 				       0x48, 0x0c, 0x8a, 0x74, 0x05, 0xfe);
 
-enum command { READ_CHAR, REGISTER_ITR, UNREGISTER_ITR };
+enum command { READ_CHAR, REGISTER_ITR, UNREGISTER_ITR, WRITE_CHARS };
 
 static struct split_dev {
+	dev_t devt;
+	struct cdev cdev;
 	struct tee_context *ctx;
 	u32 sess_id;
+	u32 irq_line;
 } dev_data;
 
-DEFINE_KFIFO(buffer, char, 256);
+#define BUFFER_SIZE 256
+DEFINE_KFIFO(buffer, char, BUFFER_SIZE);
 
-static void print_buffer(void)
-{
-	int res;
-
-	char *output =
-		kmalloc(kfifo_len(&buffer) * sizeof(char) + 1, GFP_ATOMIC);
-	output[kfifo_len(&buffer)] = '\0';
-	res = kfifo_out(&buffer, output, kfifo_len(&buffer));
-	pr_info("%s\n", output);
-	kfree(output);
-}
-
-static irqreturn_t notif_irq_handler(int irq, void *dev_id)
+static int notif_irq_handler(void)
 {
 	int ret = 0;
 	struct tee_ioctl_invoke_arg inv_arg;
@@ -63,16 +55,9 @@ static irqreturn_t notif_irq_handler(int irq, void *dev_id)
 	}
 
 	input = (char)inv_arg.params[0].a;
-	if (input == 13) {
-		print_buffer();
-		return IRQ_HANDLED;
-	} else if (kfifo_is_full(&buffer)) {
-		print_buffer();
-	}
-
 	kfifo_put(&buffer, input);
 
-	return IRQ_HANDLED;
+	return 0;
 }
 
 static int enableInterrupt(void)
@@ -99,16 +84,7 @@ static int enableInterrupt(void)
 		return -EINVAL;
 	}
 
-	pr_info("Interrupt registered.\n");
-	pr_info("Notification value: %llx.\n", inv_arg.params[0].a);
-
-	ret = request_threaded_irq(64, notif_irq_handler, NULL, 0,
-				   "optee_notification", NULL);
-	if (ret) {
-		pr_alert("Error requesting irq: %i\n", ret);
-	} else {
-		pr_info("IRQ thread registered successfully.\n");
-	}
+	register_callback(notif_irq_handler, inv_arg.params[0].a);
 
 	return 0;
 }
@@ -137,8 +113,6 @@ static int disableInterrupt(void)
 		return -EINVAL;
 	}
 
-	pr_info("Interrupt unregistered.\n");
-
 	free_irq(64, NULL);
 
 	return 0;
@@ -160,7 +134,6 @@ static int create_session(void)
 
 	memset(&sess_arg, 0, sizeof(sess_arg));
 
-	pr_alert("Opening session.\n");
 	dev_data.ctx =
 		tee_client_open_context(NULL, optee_ctx_match, NULL, NULL);
 	if (IS_ERR(dev_data.ctx))
@@ -191,18 +164,140 @@ static int destroy_context(void)
 	return 0;
 }
 
+static int device_open(struct inode *inode, struct file *filp)
+{
+	// create_session();
+	return 0;
+}
+
+static int device_release(struct inode *inode, struct file *filp)
+{
+	// destroy_context();
+	return 0;
+}
+
+static int device_read(struct file *filp, char __user *buf, size_t count,
+		       loff_t *offp)
+{
+	int ret;
+	size_t bytes_copied;
+
+	count = min(count, kfifo_len(&buffer));
+
+	ret = kfifo_to_user(&buffer, buf, count, &bytes_copied);
+	if (ret < 0) {
+		pr_err("User space buffer not large enough for requested count. Bytes copied: %zu, count: %zu\n",
+		       bytes_copied, count);
+		return -EFAULT;
+	}
+
+	return bytes_copied;
+}
+
+static int device_write(struct file *filp, const char __user *buf, size_t count,
+			loff_t *offp)
+{
+	int ret = 0;
+	size_t bytes_left;
+	struct tee_ioctl_invoke_arg inv_arg;
+	struct tee_param param[4];
+	struct tee_shm *mem;
+	u32 flags = TEE_SHM_MAPPED | TEE_SHM_DMA_BUF;
+	char *mem_ref;
+
+	memset(&inv_arg, 0, sizeof(inv_arg));
+	memset(&param, 0, sizeof(param));
+
+	inv_arg.func = WRITE_CHARS;
+	inv_arg.session = dev_data.sess_id;
+	inv_arg.num_params = 4;
+
+	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT;
+	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
+	param[2].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
+	param[3].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
+
+	mem = tee_shm_alloc(dev_data.ctx, count, flags);
+	if (IS_ERR(mem)) {
+		pr_err("Failed to map shared memory: %lx\n", PTR_ERR(mem));
+		return PTR_ERR(mem);
+	}
+
+	mem_ref = tee_shm_get_va(mem, 0);
+	if (IS_ERR(mem_ref)) {
+		pr_err("tee_shm_get_va failed: %lx\n", PTR_ERR(mem_ref));
+		return PTR_ERR(mem_ref);
+	}
+	bytes_left = copy_from_user(mem_ref, buf, count);
+	if (bytes_left > 0) {
+		pr_err("Not all bytes could be moved from user space buffer. Bytes left: %zu\n",
+		       bytes_left);
+		return -EFAULT;
+	}
+
+	param[0].u.memref.shm = mem;
+	param[0].u.memref.size = count;
+	param[0].u.memref.shm_offs = 0;
+	ret = tee_client_invoke_func(dev_data.ctx, &inv_arg, param);
+	if ((ret < 0) || (inv_arg.ret != 0)) {
+		pr_err("WRITE_CHARS invoke error: %x from %x.\n", inv_arg.ret,
+		       inv_arg.ret_origin);
+		return -EINVAL;
+	}
+
+	tee_shm_free(mem);
+
+	return count;
+}
+
+static const struct file_operations fops = { .open = device_open,
+					     .release = device_release,
+					     .read = device_read,
+					     .write = device_write };
+
+static int register_device(void)
+{
+	int ret;
+	ret = alloc_chrdev_region(&dev_data.devt, 0, 1, "console-split");
+	if (ret < 0) {
+		pr_err("Allocating device number failed with error: %x\n", ret);
+		return ret;
+	}
+
+	cdev_init(&dev_data.cdev, &fops);
+	dev_data.cdev.owner = THIS_MODULE;
+
+	ret = cdev_add(&dev_data.cdev, dev_data.devt, 1);
+	if (ret < 0) {
+		pr_err("Adding device number failed with error: %x\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int unregister_device(void)
+{
+	unregister_chrdev_region(dev_data.devt, 1);
+	cdev_del(&dev_data.cdev);
+
+	return 0;
+}
+
 static int __init hello_init(void)
 {
-	pr_info("Hello, world\n");
 	create_session();
 	enableInterrupt();
+
+	register_device();
 
 	return 0;
 }
 
 static void __exit hello_exit(void)
 {
-	pr_info("Goodbye, cruel world\n");
+	unregister_device();
+
 	disableInterrupt();
 	destroy_context();
 }

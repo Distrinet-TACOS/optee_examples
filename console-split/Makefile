@@ -9,7 +9,7 @@ PWD := $(shell pwd)
 KERNELDIR ?= $(PWD)/../../linux
 
 default:
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) CROS_COMPLIE="ccache arm-linux-gnueabihf-" ARCH=arm LOCALVERSION= modules
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) CROSS_COMPLIE="ccache arm-linux-gnueabihf-" ARCH=arm LOCALVERSION= modules
 endif
 
 clean:
