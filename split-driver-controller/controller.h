@@ -17,7 +17,7 @@
  * * 0		- OK
  * * -EINVAL	- Already registered dev identifier
  */
-int register_split_driver(dev_t dev, const char name, void (*update)(void));
+int register_split_driver(dev_t dev, const char *name, void (*update)(dev_t dev));
 
 /**
  * unregister_split_driver() - Unregister a driver with this controller.
@@ -58,14 +58,15 @@ int close_optee_session(dev_t dev);
  * read_optee() - Read data from the buffer.
  * @dev: The device identifier, gotten from the linux kernel during
  * 	 allocation of the driver numbers.
- * @buf: Output parameter which contains a buffer with the updated characters.
+ * @buf: Output parameter which contains the address of a pointer to a buffer
+ *       with the updated characters.
  * @count: Output parameter which contains the amount of characters in the buffer.
  * 
  * Return:
  * * 0		- OK
  * * -EINVAL	- No session exists
  */
-int read_optee(dev_t dev, char *buf, size_t *count);
+int read_optee(dev_t dev, char **buf, size_t *count);
 
 /**
  * write_optee() - Write data from the buffer.

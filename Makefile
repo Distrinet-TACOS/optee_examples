@@ -36,7 +36,7 @@ prepare-for-rootfs:
 		fi; \
 	done
 	@cp -p console-split/console-split.ko $(OUTPUT_DIR)/ca/
-	@cp -p split-driver-controller/split-driver-controller.ko $(OUTPUT_DIR)/ca/
+	@cp -p split-driver-controller/controller.ko $(OUTPUT_DIR)/ca/
 
 prepare-for-rootfs-clean:
 	@rm -rf $(OUTPUT_DIR)/ta
