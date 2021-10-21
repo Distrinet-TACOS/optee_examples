@@ -27,7 +27,6 @@
 
 #include <tee_internal_api.h>
 #include <tee_internal_api_extensions.h>
-
 #include <hello_world_ta.h>
 
 /*

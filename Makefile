@@ -35,8 +35,8 @@ prepare-for-rootfs:
 			cp -p plugins/syslog/*.plugin $(OUTPUT_DIR)/plugins/; \
 		fi; \
 	done
-	@cp -p console-split/console-split.ko $(OUTPUT_DIR)/ca/
-	@cp -p split-driver-controller/controller.ko $(OUTPUT_DIR)/ca/
+	@cp -p normal-controller/normal-controller.ko $(OUTPUT_DIR)/ca/
+	@cp -p normal-ssp-driver/normal-ssp-driver.ko $(OUTPUT_DIR)/ca/
 
 prepare-for-rootfs-clean:
 	@rm -rf $(OUTPUT_DIR)/ta

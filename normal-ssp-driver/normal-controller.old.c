@@ -12,25 +12,23 @@
 #include <linux/cdev.h>
 #include <linux/list.h>
 
-#include "controller.h"
-#include <console_split_public.h>
+#include "normal-controller.h"
+#include <secure_controller_public.h>
 
-#define DRIVER_NAME "Split driver controller"
+#define DRIVER_NAME "Normal controller"
 
-static const uuid_t pta_id = UUID_INIT(UUID1, UUID2, UUID3, UUID4, UUID5, UUID6,
+static const uuid_t sec_cont_uuid = UUID_INIT(UUID1, UUID2, UUID3, UUID4, UUID5, UUID6,
 				       UUID7, UUID8, UUID9, UUID10, UUID11);
-
-// enum command { READ_CHAR, REGISTER_ITR, UNREGISTER_ITR, WRITE_CHARS };
 
 static struct controller {
 	const char *name;
 	u32 sess_id;
 	struct tee_context *ctx;
-} contr_data = { .name = "Controller" };
+} norm_cont = { .name = "Controller" };
 
 #define BUFFER_SIZE 256
 
-struct split_device {
+struct device {
 	dev_t dev;
 	const char *name;
 	u32 sess_id;
@@ -42,7 +40,7 @@ struct split_device {
 
 	struct list_head list;
 };
-LIST_HEAD(split_devices);
+LIST_HEAD(devices);
 static unsigned int no_devices = 0;
 
 static void print_buf(struct update_buffer *buf)
@@ -53,11 +51,11 @@ static void print_buf(struct update_buffer *buf)
 
 static int update_buffers(struct update_buffer *buf)
 {
-	struct split_device *device;
+	struct device *device;
 
 	while (buf->count != 0) {
 		// print_buf(buf);
-		list_for_each_entry (device, &split_devices, list) {
+		list_for_each_entry (device, &devices, list) {
 			if (device->sess_id == buf->sess_id) {
 				kfifo_in(&device->buffer, buf->buf, buf->count);
 			}
@@ -77,13 +75,13 @@ static int notification_handler(void)
 	struct update_buffer *buffers;
 	size_t mem_size = no_devices * sizeof(struct update_buffer) * BUFFER_SIZE;
 	u32 flags = TEE_SHM_MAPPED | TEE_SHM_DMA_BUF;
-	struct split_device *device;
+	struct device *device;
 
 	memset(&inv_arg, 0, sizeof(inv_arg));
 	memset(&param, 0, sizeof(param));
 
 	inv_arg.func = UPDATE_BUFFER;
-	inv_arg.session = contr_data.sess_id;
+	inv_arg.session = norm_cont.sess_id;
 	inv_arg.num_params = 4;
 
 	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_OUTPUT;
@@ -95,7 +93,7 @@ static int notification_handler(void)
 	// reserved is as large as the maximum possible size. It might be
 	// possible to call into the PTA to request the exact size, but this
 	// needs to be explored further.
-	mem = tee_shm_alloc(contr_data.ctx, mem_size, flags);
+	mem = tee_shm_alloc(norm_cont.ctx, mem_size, flags);
 	if (IS_ERR(mem)) {
 		pr_err("Failed to map shared memory: %lx\n", PTR_ERR(mem));
 		return PTR_ERR(mem);
@@ -111,7 +109,7 @@ static int notification_handler(void)
 	param[0].u.memref.size = mem_size;
 	param[0].u.memref.shm_offs = 0;
 
-	ret = tee_client_invoke_func(contr_data.ctx, &inv_arg, param);
+	ret = tee_client_invoke_func(norm_cont.ctx, &inv_arg, param);
 	if ((ret < 0) || (inv_arg.ret != 0)) {
 		pr_err("UPDATE_BUFFER invoke error: %x.\n", inv_arg.ret);
 		return -EINVAL;
@@ -120,7 +118,7 @@ static int notification_handler(void)
 	update_buffers(buffers);
 	tee_shm_free(mem);
 
-	list_for_each_entry (device, &split_devices, list) {
+	list_for_each_entry (device, &devices, list) {
 		if (!kfifo_is_empty(&device->buffer)) {
 			device->update(device->dev);
 		}
@@ -135,7 +133,7 @@ static int open_session(const char *name, u32 *sess_id, bool create_buf)
 	int ret;
 
 	memset(&sess_arg, 0, sizeof(sess_arg));
-	export_uuid(sess_arg.uuid, &pta_id);
+	export_uuid(sess_arg.uuid, &sec_cont_uuid);
 	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
 	sess_arg.num_params = 4;
 
@@ -146,7 +144,7 @@ static int open_session(const char *name, u32 *sess_id, bool create_buf)
 	param[2].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 	param[3].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 
-	ret = tee_client_open_session(contr_data.ctx, &sess_arg, param);
+	ret = tee_client_open_session(norm_cont.ctx, &sess_arg, param);
 	if ((ret < 0) || (sess_arg.ret != 0)) {
 		pr_err("tee_client_open_session failed for device %s, err: %x\n",
 		       name, sess_arg.ret);
@@ -159,7 +157,7 @@ static int open_session(const char *name, u32 *sess_id, bool create_buf)
 
 static int close_session(u32 sess_id)
 {
-	tee_client_close_session(contr_data.ctx, sess_id);
+	tee_client_close_session(norm_cont.ctx, sess_id);
 	return 0;
 }
 
@@ -173,7 +171,7 @@ static int enable_notification(void)
 	memset(&param, 0, sizeof(param));
 
 	inv_arg.func = ENABLE_NOTIF;
-	inv_arg.session = contr_data.sess_id;
+	inv_arg.session = norm_cont.sess_id;
 	inv_arg.num_params = 4;
 
 	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_OUTPUT;
@@ -181,7 +179,7 @@ static int enable_notification(void)
 	param[2].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 	param[3].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 
-	ret = tee_client_invoke_func(contr_data.ctx, &inv_arg, param);
+	ret = tee_client_invoke_func(norm_cont.ctx, &inv_arg, param);
 	if ((ret < 0) || (inv_arg.ret != 0)) {
 		pr_err("ENABLE_NOTIF invoke error: %x.\n", inv_arg.ret);
 		return -EINVAL;
@@ -207,7 +205,7 @@ static int disable_notification(void)
 	memset(&param, 0, sizeof(param));
 
 	inv_arg.func = DISABLE_NOTIF;
-	inv_arg.session = contr_data.sess_id;
+	inv_arg.session = norm_cont.sess_id;
 	inv_arg.num_params = 4;
 
 	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
@@ -215,7 +213,7 @@ static int disable_notification(void)
 	param[2].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 	param[3].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 
-	ret = tee_client_invoke_func(contr_data.ctx, &inv_arg, param);
+	ret = tee_client_invoke_func(norm_cont.ctx, &inv_arg, param);
 	if ((ret < 0) || (inv_arg.ret != 0)) {
 		pr_err("DISABLE_NOTIF invoke error: %x.\n", inv_arg.ret);
 		return -EINVAL;
@@ -244,7 +242,7 @@ static int enable_interrupt(u32 sess_id)
 	param[2].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 	param[3].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 
-	ret = tee_client_invoke_func(contr_data.ctx, &inv_arg, param);
+	ret = tee_client_invoke_func(norm_cont.ctx, &inv_arg, param);
 	if ((ret < 0) || (inv_arg.ret != 0)) {
 		pr_err("REGISTER_ITR invoke error: %x.\n", inv_arg.ret);
 		return -EINVAL;
@@ -271,13 +269,11 @@ static int disable_interrupt(u32 sess_id)
 	param[2].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 	param[3].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 
-	ret = tee_client_invoke_func(contr_data.ctx, &inv_arg, param);
+	ret = tee_client_invoke_func(norm_cont.ctx, &inv_arg, param);
 	if ((ret < 0) || (inv_arg.ret != 0)) {
 		pr_err("UNREGISTER_ITR invoke error: %x.\n", inv_arg.ret);
 		return -EINVAL;
 	}
-
-	free_irq(64, NULL);
 
 	return 0;
 }
@@ -293,9 +289,9 @@ static int optee_ctx_match(struct tee_ioctl_version_data *ver, const void *data)
 static int create_context(void)
 {
 	pr_info("Creating context.\n");
-	contr_data.ctx =
+	norm_cont.ctx =
 		tee_client_open_context(NULL, optee_ctx_match, NULL, NULL);
-	if (IS_ERR(contr_data.ctx))
+	if (IS_ERR(norm_cont.ctx))
 		return -ENODEV;
 
 	return 0;
@@ -304,7 +300,7 @@ static int create_context(void)
 static int destroy_context(void)
 {
 	pr_info("Destroying context.\n");
-	tee_client_close_context(contr_data.ctx);
+	tee_client_close_context(norm_cont.ctx);
 
 	return 0;
 }
@@ -432,7 +428,7 @@ static int unregister_device(void)
 static int __init controller_init(void)
 {
 	create_context();
-	open_session(contr_data.name, &contr_data.sess_id, false);
+	open_session(norm_cont.name, &norm_cont.sess_id, false);
 	enable_notification();
 
 	// register_device();
@@ -445,7 +441,7 @@ static void __exit controller_exit(void)
 	// unregister_device();
 
 	disable_notification();
-	close_session(contr_data.sess_id);
+	close_session(norm_cont.sess_id);
 	destroy_context();
 }
 
@@ -461,10 +457,10 @@ MODULE_AUTHOR("Tom Van Eyck");
 
 int register_split_driver(dev_t dev, const char *name, void (*update)(dev_t dev))
 {
-	struct split_device *device;
+	struct device *device;
 	pr_info("Registering split driver.\n");
 
-	list_for_each_entry (device, &split_devices, list) {
+	list_for_each_entry (device, &devices, list) {
 		if (device->dev == dev) {
 			return -EINVAL;
 		}
@@ -476,7 +472,7 @@ int register_split_driver(dev_t dev, const char *name, void (*update)(dev_t dev)
 	device->update = update;
 	INIT_KFIFO(device->buffer);
 
-	list_add(&device->list, &split_devices);
+	list_add(&device->list, &devices);
 	no_devices++;
 
 	return 0;
@@ -485,10 +481,10 @@ EXPORT_SYMBOL(register_split_driver);
 
 int unregister_split_driver(dev_t dev)
 {
-	struct split_device *device;
+	struct device *device;
 	pr_info("Unregistering split driver.\n");
 
-	list_for_each_entry (device, &split_devices, list) {
+	list_for_each_entry (device, &devices, list) {
 		if (device->dev == dev) {
 			list_del(&device->list);
 			no_devices--;
@@ -504,9 +500,9 @@ EXPORT_SYMBOL(unregister_split_driver);
 
 int open_optee_session(dev_t dev)
 {
-	struct split_device *device;
+	struct device *device;
 
-	list_for_each_entry (device, &split_devices, list) {
+	list_for_each_entry (device, &devices, list) {
 		if (device->dev == dev) {
 			open_session(device->name, &device->sess_id, true);
 			enable_interrupt(device->sess_id);
@@ -521,13 +517,13 @@ EXPORT_SYMBOL(open_optee_session);
 
 int close_optee_session(dev_t dev)
 {
-	struct split_device *device;
+	struct device *device;
 	int ret;
 
-	list_for_each_entry (device, &split_devices, list) {
+	list_for_each_entry (device, &devices, list) {
 		if (device->dev == dev && device->sess_id > 0) {
 			disable_interrupt(device->sess_id);
-			ret = tee_client_close_session(contr_data.ctx,
+			ret = tee_client_close_session(norm_cont.ctx,
 						       device->sess_id);
 			return 0;
 		}
@@ -539,10 +535,10 @@ EXPORT_SYMBOL(close_optee_session);
 
 int read_optee(dev_t dev, char **buf, size_t *count)
 {
-	struct split_device *device;
+	struct device *device;
 	unsigned int n;
 
-	list_for_each_entry (device, &split_devices, list) {
+	list_for_each_entry (device, &devices, list) {
 		if (device->dev == dev && device->sess_id > 0) {
 			*count = kfifo_len(&device->buffer);
 			*buf = kmalloc(*count * sizeof(char), GFP_KERNEL);
@@ -569,7 +565,7 @@ EXPORT_SYMBOL(read_optee);
 
 int write_optee(dev_t dev, const char *buf, size_t count)
 {
-	struct split_device *device;
+	struct device *device;
 	bool found = false;
 	int ret = 0;
 	struct tee_ioctl_invoke_arg inv_arg;
@@ -579,7 +575,7 @@ int write_optee(dev_t dev, const char *buf, size_t count)
 	char *mem_ref;
 
 	// Find device with equal dev number.
-	list_for_each_entry (device, &split_devices, list) {
+	list_for_each_entry (device, &devices, list) {
 		if (device->dev == dev) {
 			found = true;
 			break;
@@ -602,7 +598,7 @@ int write_optee(dev_t dev, const char *buf, size_t count)
 	param[2].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 	param[3].attr = TEE_IOCTL_PARAM_ATTR_TYPE_NONE;
 
-	mem = tee_shm_alloc(contr_data.ctx, count, flags);
+	mem = tee_shm_alloc(norm_cont.ctx, count, flags);
 	if (IS_ERR(mem)) {
 		pr_err("Failed to map shared memory: %lx\n", PTR_ERR(mem));
 		return PTR_ERR(mem);
@@ -618,7 +614,7 @@ int write_optee(dev_t dev, const char *buf, size_t count)
 	param[0].u.memref.shm = mem;
 	param[0].u.memref.size = count;
 	param[0].u.memref.shm_offs = 0;
-	ret = tee_client_invoke_func(contr_data.ctx, &inv_arg, param);
+	ret = tee_client_invoke_func(norm_cont.ctx, &inv_arg, param);
 	if ((ret < 0) || (inv_arg.ret != 0)) {
 		pr_err("WRITE_CHARS invoke error: %x from %x.\n", inv_arg.ret,
 		       inv_arg.ret_origin);
