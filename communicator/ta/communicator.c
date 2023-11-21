@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 #include <tee_internal_api.h>
 #include <tee_internal_api_extensions.h>
@@ -41,21 +42,85 @@ struct sock_handle {
 
 const char digicert_global_root_ca[] = DIGICERT_GLOBAL_ROOT_CA;
 
+#define SELFSIGNED_CERT                                                        \
+	"-----BEGIN CERTIFICATE-----\r\n"                                      \
+	"MIIGOzCCBCOgAwIBAgIUEBxLYFdoujaTyp8Wgk0XdNNLsA8wDQYJKoZIhvcNAQEL\r\n" \
+	"BQAwgawxCzAJBgNVBAYTAkJFMRcwFQYDVQQIDA5WbGFhbXMtQnJhYmFudDEPMA0G\r\n" \
+	"A1UEBwwGTGV1dmVuMRIwEAYDVQQKDAlLVSBMZXV2ZW4xGzAZBgNVBAsMEkRpc3Ry\r\n" \
+	"aU5ldCwgbmVzLWxhYjEaMBgGA1UEAwwRdXBkYXRlLm5lcy1sYWIuYmUxJjAkBgkq\r\n" \
+	"hkiG9w0BCQEWF3RvbS52YW5leWNrQGt1bGV1dmVuLmJlMB4XDTIzMTAyNTExNTQ0\r\n" \
+	"NFoXDTI0MTAyNDExNTQ0NFowgawxCzAJBgNVBAYTAkJFMRcwFQYDVQQIDA5WbGFh\r\n" \
+	"bXMtQnJhYmFudDEPMA0GA1UEBwwGTGV1dmVuMRIwEAYDVQQKDAlLVSBMZXV2ZW4x\r\n" \
+	"GzAZBgNVBAsMEkRpc3RyaU5ldCwgbmVzLWxhYjEaMBgGA1UEAwwRdXBkYXRlLm5l\r\n" \
+	"cy1sYWIuYmUxJjAkBgkqhkiG9w0BCQEWF3RvbS52YW5leWNrQGt1bGV1dmVuLmJl\r\n" \
+	"MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAvb8/xnmLjxUCD7RLcJET\r\n" \
+	"VKNjiJ4CfqXqTp90xpNZ/hTlfu1BbRXGU/ko8KSKU7ERoHfIuMXhkfaDCZ6g7v2I\r\n" \
+	"SfinpS8rzG2LNeGYj7wDM7LeZBq5I7uDwKm8ZkmMSodre3kJIdIL6L2CAkzEEkDb\r\n" \
+	"RnC5MZUBWly3bkkG5C+9TLlnzG4PEvNUSdhHY2h6JhtEkG/o7qsublX/ahAYhZnC\r\n" \
+	"h6mnbQdbYAqYGAJ6bjW5V05Xq72l0HOAymbwFZ51TCG4jXOa5lRMq27HFpBEY+R9\r\n" \
+	"ytGhFrx8FySam7X0oe4qNUl5Foz4kVqcaU7Y4+0Izxiqs9uc4io7HRUkszxK+zvJ\r\n" \
+	"W45GAuhssI2DAwhe5bGg/2T4JgIxIWtFiHi/yZv7dpmxH+C4FTC55e+p31lOuyiK\r\n" \
+	"hqugVxS7vRQPfbYRAYxKiy3X2zAjpPja5h6pJl1YubAKiLtFroflQMks103KrnNC\r\n" \
+	"0Yoj8Jwtgmu6hlHMPXwLNpB7kQ+p1exhgIFypWSTJIOXSXfATZYRvWtNx1td0aIs\r\n" \
+	"CrgAM/oovOUk7Hs5z6X9OhgiDzZYq/xiAkJnwgZ4MKyW4IoQtafka5q0DUAE47i0\r\n" \
+	"QrNUV514t2Hx2aZRsOneDU+8xonNudoknY5mcM2bQACLkMRAXlp3sZ7XEyZxeRiq\r\n" \
+	"g5Ez8rFWnDTFyx3jS3HSRJECAwEAAaNTMFEwHQYDVR0OBBYEFHqT0lyBgJS6x2eF\r\n" \
+	"mArYmkLkQy7IMB8GA1UdIwQYMBaAFHqT0lyBgJS6x2eFmArYmkLkQy7IMA8GA1Ud\r\n" \
+	"EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggIBAKLtXky6v0IydTY0PlLOyV68\r\n" \
+	"gOq0gc6f9tob6bS7C8KvCAsQ/L4GQDwgBlWV8RaFy6HMalTfrYqtLP/TpZl0HnTQ\r\n" \
+	"TxOhxB4eI1LwGVRujyE7VR8Tsdclfe54WdOS0e2Vg+wl/WdLRUUSQhyJm0Rqj0M4\r\n" \
+	"3gX7XstCoOz0hibdZbstoElNkd/iEDPSMUvp14YYtHR94jLHyXFqy+j7mXaJasXW\r\n" \
+	"yjTJoU1B9qH8lrHfjmI6TLd99GmHeKTAOUHtGc2L8LL86zR7m0ykXSrcjHUA+owv\r\n" \
+	"otC7nporuJY+5XuBgG/KvReGk4/a3glMe6OgQUVbK01o0WwFvbwxGA7COxpYTSwq\r\n" \
+	"uWH1QeHK9qraZXpD6MOpKWGeYhd+6V0e2GIbDHbCjq1vHGW3rp5Xs7ft2n+MVoCo\r\n" \
+	"7kgQVXew0CC9zzgb0YEuLjjRKkHBAV+7ybolOoZegpd6X0eJjp2VP28zRNIxjXmn\r\n" \
+	"+Z5PshddHH2ZHGC9hORTKiBrt66UiBf2IIRBfEq1BAIDLxNx1/zhMXLoT6py2jkq\r\n" \
+	"83FiBCGbMOfDQc7gsX75byjokij5EnSsJiEKrM7L3k5trNHZwfkspM6M9FInbhWK\r\n" \
+	"yL8/mwoUWVuip5xcUOr5qzy5zDRle8CEuBPuVSRh11aY/xdbB+lDLGuSgucz6WMy\r\n" \
+	"sraORoTaZczeHHgGB4mc\r\n"                                             \
+	"-----END CERTIFICATE-----\r\n"
+
+const char selfsigned_cert[] = SELFSIGNED_CERT;
+
+#define HOST_NAME "update.nes-lab.be"
+const char *host_name = HOST_NAME;
+const char *server_name = "update.nes-lab.be";
+const char *server_addr = "192.168.137.1";
+const uint16_t tcp_port = 8000;
+const uint16_t tls_port = 8001;
+
 TEE_Result TA_CreateEntryPoint(void)
 {
-	char *cert_id;
+	const char *cert_id;
 	TEE_Result res;
 
-	cert_id = "DigiCert Global Root CA";
-	res = TEE_CreatePersistentObject(
+	// cert_id = "DigiCert Global Root CA";
+	// res = TEE_CreatePersistentObject(
+	// 	TEE_STORAGE_PRIVATE, cert_id, sizeof(cert_id),
+	// 	TEE_DATA_FLAG_ACCESS_READ | TEE_DATA_FLAG_ACCESS_WRITE_META,
+	// 	TEE_HANDLE_NULL, digicert_global_root_ca,
+	// 	sizeof(digicert_global_root_ca), &h.trustedCerts);
+	cert_id = "Selfsigned";
+	res = TEE_OpenPersistentObject(
 		TEE_STORAGE_PRIVATE, cert_id, sizeof(cert_id),
 		TEE_DATA_FLAG_ACCESS_READ | TEE_DATA_FLAG_ACCESS_WRITE_META,
-		TEE_HANDLE_NULL, digicert_global_root_ca,
-		sizeof(digicert_global_root_ca), &h.trustedCerts);
+		&h.trustedCerts);
+
+	if (res == TEE_ERROR_ITEM_NOT_FOUND) {
+		res = TEE_CreatePersistentObject(
+			TEE_STORAGE_PRIVATE, cert_id, sizeof(cert_id),
+			TEE_DATA_FLAG_ACCESS_READ |
+				TEE_DATA_FLAG_ACCESS_WRITE_META,
+			TEE_HANDLE_NULL, selfsigned_cert,
+			sizeof(selfsigned_cert), &h.trustedCerts);
+	}
+
 	if (res != TEE_SUCCESS) {
 		EMSG("Couldn't create persistent object for certificate: %x",
 		     res);
-		TEE_CloseAndDeletePersistentObject1(h.trustedCerts);
+		if (h.trustedCerts != TEE_HANDLE_NULL) {
+			TEE_CloseAndDeletePersistentObject1(h.trustedCerts);
+		}
 		return res;
 	}
 
@@ -64,7 +129,9 @@ TEE_Result TA_CreateEntryPoint(void)
 
 void TA_DestroyEntryPoint(void)
 {
-	TEE_CloseAndDeletePersistentObject1(h.trustedCerts);
+	if (h.trustedCerts != TEE_HANDLE_NULL) {
+		TEE_CloseAndDeletePersistentObject1(h.trustedCerts);
+	}
 }
 
 TEE_Result TA_OpenSessionEntryPoint(uint32_t __unused param_types,
@@ -89,10 +156,10 @@ static TEE_Result open_socket(uint32_t __maybe_unused param_types,
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	if (strncmp(params[0].memref.buffer, "www.example.com",
+	if (strncmp(params[0].memref.buffer, host_name,
 		    params[0].memref.size) != 0) {
 		EMSG("Wrong destination url! dest: %s",
-		     params[0].memref.buffer);
+		     (char *)params[0].memref.buffer);
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
 
@@ -106,8 +173,8 @@ static TEE_Result open_socket(uint32_t __maybe_unused param_types,
 	// setup_udp.server_port = 80;
 
 	tcp_setup.ipVersion = TEE_IP_VERSION_4;
-	tcp_setup.server_addr = (char *)"93.184.216.34";
-	tcp_setup.server_port = 80;
+	tcp_setup.server_addr = (char *)server_addr;
+	tcp_setup.server_port = tcp_port;
 
 	// h.socket = TEE_udpSocket;
 	h.tcp_socket = TEE_tcpSocket;
@@ -133,15 +200,14 @@ static TEE_Result open_ssl_socket(uint32_t __maybe_unused param_types,
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	if (strncmp(params[0].memref.buffer, "www.example.com",
+	if (strncmp(params[0].memref.buffer, host_name,
 		    params[0].memref.size) != 0) {
 		EMSG("Wrong destination url! dest: %s",
-		     params[0].memref.buffer);
+		     (char *)params[0].memref.buffer);
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
 
-	const unsigned char *pers = "ssl_client1";
-	const unsigned char *server_name = "example.com";
+	const char *pers = "ssl_client1";
 	TEE_tcpSocket_Setup tcp_setup = {};
 	TEE_tlsSocket_Setup tls_setup = {};
 	TEE_tlsSocket_Credentials credentials = {};
@@ -150,8 +216,8 @@ static TEE_Result open_ssl_socket(uint32_t __maybe_unused param_types,
 	TEE_Result res;
 
 	tcp_setup.ipVersion = TEE_IP_VERSION_4;
-	tcp_setup.server_addr = (char *)"93.184.216.34";
-	tcp_setup.server_port = 443;
+	tcp_setup.server_addr = (char *)server_addr;
+	tcp_setup.server_port = tls_port;
 
 	h.tcp_socket = TEE_tcpSocket;
 	res = h.tcp_socket->open(&h.tcp_ctx, &tcp_setup, &error);
@@ -162,9 +228,9 @@ static TEE_Result open_ssl_socket(uint32_t __maybe_unused param_types,
 
 	tls_setup.baseContext = &h.tcp_ctx;
 	tls_setup.baseSocket = h.tcp_socket;
-	tls_setup.persString = pers;
+	tls_setup.persString = (const unsigned char *)pers;
 	tls_setup.persStringLen = strlen(pers);
-	tls_setup.serverName = server_name;
+	tls_setup.serverName = (unsigned char *)server_name;
 	tls_setup.serverNameLen = strlen(server_name);
 	tls_setup.credentials = &credentials;
 
@@ -203,10 +269,10 @@ static TEE_Result close_socket(uint32_t __maybe_unused param_types,
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	if (strncmp(params[0].memref.buffer, "www.example.com",
+	if (strncmp(params[0].memref.buffer, host_name,
 		    params[0].memref.size) != 0) {
 		EMSG("Wrong destination url! dest: %s",
-		     params[0].memref.buffer);
+		     (char *)params[0].memref.buffer);
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
 
@@ -231,10 +297,10 @@ static TEE_Result close_ssl_socket(uint32_t __maybe_unused param_types,
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	if (strncmp(params[0].memref.buffer, "www.example.com",
+	if (strncmp(params[0].memref.buffer, host_name,
 		    params[0].memref.size) != 0) {
 		EMSG("Wrong destination url! dest: %s",
-		     params[0].memref.buffer);
+		     (char *)params[0].memref.buffer);
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
 
@@ -263,10 +329,10 @@ static TEE_Result get_data(uint32_t __maybe_unused param_types,
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	if (strncmp(params[0].memref.buffer, "www.example.com",
+	if (strncmp(params[0].memref.buffer, host_name,
 		    params[0].memref.size) != 0) {
 		EMSG("Wrong destination url! dest: %s",
-		     params[0].memref.buffer);
+		     (char *)params[0].memref.buffer);
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
 
@@ -276,41 +342,32 @@ static TEE_Result get_data(uint32_t __maybe_unused param_types,
 	uint32_t i;
 
 	const char *buf = "GET / HTTP/1.1\r\n"
-			  "Host: www.example.com\r\n"
+			  "Host:" HOST_NAME "\r\n"
 			  "Connection: Close\r\n"
 			  "\r\n";
 	uint32_t send_len = strlen(buf);
-	DMSG("Invoking print function: 20472843b0e2\n");
 
 	res = h.tcp_socket->send(h.tcp_ctx, buf, &send_len,
 				 TEE_TIMEOUT_INFINITE);
-	DMSG("Invoking print function: 3b48a6df6abe\n");
 	if (res != TEE_SUCCESS) {
 		EMSG("Couldn't send data on tcp_socket: %x", res);
 		return res;
 	}
-	DMSG("Invoking print function: d6a7eaebd186\n");
 
 	recv_len = 0;
 	do {
-		DMSG("Invoking print function: 56f9997c50a9\n");
 		res = h.tcp_socket->recv(h.tcp_ctx, NULL, &recv_len,
 					 TEE_TIMEOUT_INFINITE);
-		DMSG("Invoking print function: 8030a16b8253\n");
 		if (res != TEE_SUCCESS) {
 			EMSG("Couldn't get recv data length: %x", res);
 			return res;
-			DMSG("Invoking print function: d37bb73c2264\n");
 		}
 	} while (recv_len == 0);
 
-	DMSG("Invoking print function: 8da9e3c00fb1\n");
 	IMSG("Received %u bytes", recv_len);
 	recv = TEE_Malloc(recv_len, TEE_MALLOC_FILL_ZERO);
-	DMSG("Invoking print function: 9a36f93c0757\n");
 	res = h.tcp_socket->recv(h.tcp_ctx, recv, &recv_len,
 				 TEE_TIMEOUT_INFINITE);
-	DMSG("Invoking print function: 01da64fc0dcd\n");
 	if (res == TEE_SUCCESS) {
 		for (i = 0; i < recv_len; i++) {
 			putchar(((char *)recv)[i]);
@@ -319,9 +376,117 @@ static TEE_Result get_data(uint32_t __maybe_unused param_types,
 		EMSG("Couldn't get recv data: %x", res);
 	}
 
-	DMSG("Invoking print function: f1cf2dd0cdd3\n");
 	TEE_Free(recv);
 	return res;
+}
+
+struct chunk {
+	struct chunk *head;
+	struct chunk *next;
+	size_t size;
+	char data[];
+};
+
+static size_t find_header_end(struct chunk *chunk)
+{
+	size_t i;
+	size_t count = 0;
+	size_t present = 0;
+
+	i = 0;
+	// DMSG("  i, count, present, size, data");
+	while (present < 4) {
+		// DMSG("%3d, %5d, %7d, %4d, %x", i, count, present, chunk->size,
+		//      chunk->data);
+		if (i < chunk->size) {
+			if (present % 2 == 1 && chunk->data[i] == '\n') {
+				present++;
+			} else if (present % 2 == 0 && chunk->data[i] == '\r') {
+				present++;
+			} else {
+				present = 0;
+			}
+			i++;
+		} else if (chunk->next) {
+			count += chunk->size;
+			i = 0;
+			chunk = chunk->next;
+		} else {
+			return 0;
+		}
+	}
+
+	return count + i;
+
+	// do {
+	// 	if (previous && strncmp(&chunk->data[0], "\r\n", 2)) {
+	// 		// Previous chunk already contained CRLF
+	// 		return count;
+	// 	}
+
+	// 	for (i = 0; i <= chunk->size - 4; i++) {
+	// 		if (strncmp(&chunk->data[i], "\r\n\r\n", 4)) {
+	// 			// Add first CRLF to header
+	// 			return count + i + 2;
+	// 		}
+	// 	}
+
+	// 	// Discover sequential CRLF across chunks
+	// 	// Do not account for single CRLF split across chunks
+	// 	if (strncmp(&chunk->data[-2], "\r\n", 2)) {
+	// 		previous = true;
+	// 	} else {
+	// 		previous = false;
+	// 	}
+
+	// 	count += chunk->size;
+	// } while (chunk = chunk->next);
+
+	// return 0;
+}
+
+static size_t find_content_length(struct chunk *chunk, size_t header_len)
+{
+	size_t i;
+	size_t count = 0;
+	const char *indicator = "Content-Length: ";
+
+	do {
+		for (i = 0; i <= chunk->size - strlen(indicator); i++) {
+			if (strncmp(&chunk->data[i], indicator,
+				    strlen(indicator)) == 0) {
+				goto indicator_found;
+			}
+		}
+		count += chunk->size;
+	} while ((chunk = chunk->next) && count < header_len);
+
+	return 0;
+
+indicator_found:
+	i += strlen(indicator);
+	size_t length = 0;
+	// DMSG("  i, count, size, data");
+
+	while (chunk) {
+		if (i < chunk->size) {
+			// DMSG("%3d, %5d, %4d, %c", i, count, chunk->size,
+			//      chunk->data[i]);
+			if (chunk->data[i] == '\r') {
+				return length;
+			} else {
+				length *= 10;
+				length += chunk->data[i] - '0';
+			}
+			i++;
+		} else {
+			count += chunk->size;
+			i = 0;
+			chunk = chunk->next;
+		}
+	}
+
+	return 0;
 }
 
 static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
@@ -335,25 +500,23 @@ static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
 	if (param_types != exp_param_types)
 		return TEE_ERROR_BAD_PARAMETERS;
 
-	if (strncmp(params[0].memref.buffer, "www.example.com",
+	if (strncmp(params[0].memref.buffer, host_name,
 		    params[0].memref.size) != 0) {
 		EMSG("Wrong destination url! dest: %s",
-		     params[0].memref.buffer);
+		     (char *)params[0].memref.buffer);
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
 
 	TEE_Result res;
-	int ret;
-	unsigned char *recv;
-	unsigned char last_buf[11];
-	memset(last_buf, 0, sizeof(last_buf));
-	char *const last = &last_buf[0];
-	size_t last_len = sizeof(last_buf) - 1;
-	uint32_t recv_len, recvd = 0;
-	uint32_t i;
+	struct chunk *chunk = 0;
+	int no_chunk = 0;
+	uint32_t recv_len = 0;
+	size_t recv_bytes = 0;
+	size_t header_length = 0;
+	size_t content_length = 0;
 
-	const char *buf = "GET / HTTP/1.1\r\n"
-			  "Host: www.example.com\r\n"
+	const char *buf = "GET /zImage HTTP/1.1\r\n"
+			  "Host:" HOST_NAME "\r\n"
 			  "Connection: Close\r\n"
 			  "\r\n";
 	uint32_t send_len = strlen(buf);
@@ -367,7 +530,8 @@ static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
 
 	IMSG("Sent request.\n");
 
-	do {
+	while (header_length == 0 ||
+	       recv_bytes - header_length < content_length) {
 		recv_len = 0;
 		do {
 			res = h.tls_socket->recv(h.tls_ctx, NULL, &recv_len,
@@ -377,35 +541,92 @@ static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
 				return res;
 			}
 		} while (recv_len == 0);
+		DMSG("%u bytes available", recv_len);
 
-		DMSG("Received %u bytes", recv_len);
-		recv = TEE_Malloc(recv_len, TEE_MALLOC_FILL_ZERO);
-		res = h.tls_socket->recv(h.tls_ctx, recv, &recv_len,
+		struct chunk *next_chunk = TEE_Malloc(
+			sizeof(struct chunk) + recv_len * sizeof(char),
+			TEE_MALLOC_FILL_ZERO);
+		if (!next_chunk) {
+			EMSG("Couldn't allocate memory for chunk %d: %x",
+			     no_chunk, (unsigned int)next_chunk);
+			return res;
+		}
+		if (chunk) {
+			chunk->next = next_chunk;
+			next_chunk->head = chunk->head;
+		} else {
+			next_chunk->head = next_chunk;
+		}
+		chunk = next_chunk;
+		chunk->size = recv_len;
+		recv_bytes += recv_len;
+
+		res = h.tls_socket->recv(h.tls_ctx, &chunk->data, &chunk->size,
 					 TEE_TIMEOUT_INFINITE);
 		if (res != TEE_SUCCESS) {
 			EMSG("Couldn't get recv data: %x", res);
 			return res;
 		}
+		DMSG("Received chunk %d of size %u", no_chunk, chunk->size);
 
-		for (i = 0; i < recv_len; i++) {
-			putchar(((char *)recv)[i]);
+		if (!header_length) {
+			header_length = find_header_end(chunk->head);
+			if (header_length > 0) {
+				content_length = find_content_length(
+					chunk->head, header_length);
+				if (content_length == 0) {
+					EMSG("No \"Content-Length\" found in header");
+					return TEE_ERROR_ITEM_NOT_FOUND;
+				}
+			}
 		}
 
-		if (recv_len >= last_len) {
-			memcpy(last, recv + (recv_len - last_len), last_len);
-		} else if (recvd + recv_len >= last_len) {
-			memcpy(last, last + recvd + recv_len - last_len,
-			       last_len - recv_len);
-			memcpy(last + last_len - recv_len, recv, recv_len);
-		} else {
-			memcpy(last + recvd, recv, recv_len);
-		}
-		recvd += recv_len;
+		/* Print chunk */
+		// size_t buffer_len = 49;
+		// char buffer[buffer_len + 1];
+		// memset(buffer, 0, buffer_len + 1);
+		// size_t c = 0;
+		// size_t i = 0;
+		// for (i = 0; i < chunk->size; i += 2) {
+		// 	char char1 = chunk->data[i];
+		// 	if (c <= buffer_len - 4 && i <= chunk->size - 2) {
+		// 		char char2 = chunk->data[i + 1];
+		// 		snprintf(&buffer[c], 5, "%02x%02x", char1,
+		// 			 char2);
+		// 		c += 4;
+		// 		if (c < buffer_len - 2) {
+		// 			buffer[c] = ' ';
+		// 			c++;
+		// 		}
+		// 	} else if (c <= buffer_len - 2 &&
+		// 		   i <= chunk->size - 1) {
+		// 		snprintf(&buffer[c], 3, "%02x", char1);
+		// 		DMSG("%s", buffer);
+		// 	} else {
+		// 		DMSG("%s", buffer);
+		// 		memset(buffer, 0, buffer_len + 1);
+		// 		c = 0;
+		// 		i -= 2;
+		// 	}
+		// }
 
-		TEE_Free(recv);
-	} while (!strstr(last, "</html>"));
+		// if (c > 0) {
+		// 	DMSG("%s", buffer);
+		// }
 
-exit:
+		no_chunk++;
+		DMSG("header_length, content_length, recv_bytes");
+		DMSG("%13d, %14d, %10d", header_length, content_length,
+		     recv_bytes);
+	}
+
+	chunk = chunk->head;
+	while (chunk) {
+		struct chunk *tmp = chunk;
+		chunk = tmp->next;
+		TEE_Free(tmp);
+	}
+
 	return res;
 }
 
