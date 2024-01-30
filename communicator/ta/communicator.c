@@ -5,8 +5,21 @@
 #include <tee_tcpsocket.h>
 #include <tee_udpsocket.h>
 #include <tee_tlssocket.h>
+#include <malloc.h>
 
 #include <communicator.h>
+
+#define PTA_UPDATER_UUID                                               \
+	{                                                              \
+		0xb84653a5, 0x753a, 0x4fe1,                            \
+		{                                                      \
+			0xb1, 0x87, 0x0c, 0xcc, 0x6a, 0x7c, 0xdd, 0x83 \
+		}                                                      \
+	}
+
+/* The function IDs implemented in this TA */
+#define PTA_UPDATER_CMD_UPDATE	    0
+#define PTA_UPDATER_CMD_ICREASE_MEM 1
 
 struct sock_handle {
 	TEE_iSocketHandle tcp_ctx;
@@ -383,6 +396,7 @@ static TEE_Result get_data(uint32_t __maybe_unused param_types,
 struct chunk {
 	struct chunk *head;
 	struct chunk *next;
+	unsigned int n;
 	size_t size;
 	char data[];
 };
@@ -417,32 +431,6 @@ static size_t find_header_end(struct chunk *chunk)
 	}
 
 	return count + i;
-
-	// do {
-	// 	if (previous && strncmp(&chunk->data[0], "\r\n", 2)) {
-	// 		// Previous chunk already contained CRLF
-	// 		return count;
-	// 	}
-
-	// 	for (i = 0; i <= chunk->size - 4; i++) {
-	// 		if (strncmp(&chunk->data[i], "\r\n\r\n", 4)) {
-	// 			// Add first CRLF to header
-	// 			return count + i + 2;
-	// 		}
-	// 	}
-
-	// 	// Discover sequential CRLF across chunks
-	// 	// Do not account for single CRLF split across chunks
-	// 	if (strncmp(&chunk->data[-2], "\r\n", 2)) {
-	// 		previous = true;
-	// 	} else {
-	// 		previous = false;
-	// 	}
-
-	// 	count += chunk->size;
-	// } while (chunk = chunk->next);
-
-	// return 0;
 }
 
 static size_t find_content_length(struct chunk *chunk, size_t header_len)
@@ -489,8 +477,78 @@ indicator_found:
 	return 0;
 }
 
-static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
-			       TEE_Param __maybe_unused params[4])
+static TEE_Result receive_data(void *buf, size_t *bytes)
+{
+	TEE_Result res;
+	size_t recv_len = 0;
+	do {
+		res = h.tls_socket->recv(h.tls_ctx, NULL, &recv_len,
+					 TEE_TIMEOUT_INFINITE);
+		if (res != TEE_SUCCESS) {
+			EMSG("Couldn't get recv data length: %x", res);
+			return res;
+		}
+	} while (recv_len == 0);
+	// DMSG("%u bytes available", recv_len);
+
+	res = h.tls_socket->recv(h.tls_ctx, buf, &recv_len,
+				 TEE_TIMEOUT_INFINITE);
+	if (res != TEE_SUCCESS) {
+		EMSG("Couldn't get recv data: %x", res);
+		return res;
+	}
+	// DMSG("Received %u bytes", recv_len);
+	*bytes = recv_len;
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result receive_chunk(struct chunk **chunk, size_t *bytes)
+{
+	TEE_Result res;
+	size_t recv_len = 0;
+	do {
+		res = h.tls_socket->recv(h.tls_ctx, NULL, &recv_len,
+					 TEE_TIMEOUT_INFINITE);
+		if (res != TEE_SUCCESS) {
+			EMSG("Couldn't get recv data length: %x", res);
+			return res;
+		}
+	} while (recv_len == 0);
+	DMSG("%u bytes available", recv_len);
+
+	struct chunk *next_chunk =
+		TEE_Malloc(sizeof(struct chunk) + recv_len * sizeof(char),
+			   TEE_MALLOC_FILL_ZERO);
+	if (!next_chunk) {
+		EMSG("Couldn't allocate memory for chunk %d: %x",
+		     *chunk ? (*chunk)->n + 1 : 0, (unsigned int)next_chunk);
+		return res;
+	}
+	if (*chunk) {
+		(*chunk)->next = next_chunk;
+		next_chunk->head = (*chunk)->head;
+		next_chunk->n = (*chunk)->n + 1;
+	} else {
+		next_chunk->head = next_chunk;
+		next_chunk->n = 0;
+	}
+	next_chunk->size = recv_len;
+
+	res = h.tls_socket->recv(h.tls_ctx, &next_chunk->data,
+				 &next_chunk->size, TEE_TIMEOUT_INFINITE);
+	if (res != TEE_SUCCESS) {
+		EMSG("Couldn't get recv data: %x", res);
+		return res;
+	}
+	DMSG("Received chunk %d of size %u", next_chunk->n, next_chunk->size);
+	*chunk = next_chunk;
+	*bytes = (*chunk)->size;
+
+	return TEE_SUCCESS;
+}
+
+static TEE_Result get_ssl_data(uint32_t param_types, TEE_Param params[4])
 {
 	uint32_t exp_param_types =
 		TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
@@ -509,12 +567,11 @@ static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
 
 	TEE_Result res;
 	struct chunk *chunk = 0;
-	int no_chunk = 0;
-	uint32_t recv_len = 0;
-	size_t recv_bytes = 0;
+	size_t bytes = 0;
 	size_t header_length = 0;
 	size_t content_length = 0;
 
+	// Send request
 	const char *buf = "GET /zImage HTTP/1.1\r\n"
 			  "Host:" HOST_NAME "\r\n"
 			  "Connection: Close\r\n"
@@ -530,56 +587,54 @@ static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
 
 	IMSG("Sent request.\n");
 
-	while (header_length == 0 ||
-	       recv_bytes - header_length < content_length) {
-		recv_len = 0;
-		do {
-			res = h.tls_socket->recv(h.tls_ctx, NULL, &recv_len,
-						 TEE_TIMEOUT_INFINITE);
-			if (res != TEE_SUCCESS) {
-				EMSG("Couldn't get recv data length: %x", res);
-				return res;
-			}
-		} while (recv_len == 0);
-		DMSG("%u bytes available", recv_len);
-
-		struct chunk *next_chunk = TEE_Malloc(
-			sizeof(struct chunk) + recv_len * sizeof(char),
-			TEE_MALLOC_FILL_ZERO);
-		if (!next_chunk) {
-			EMSG("Couldn't allocate memory for chunk %d: %x",
-			     no_chunk, (unsigned int)next_chunk);
-			return res;
-		}
-		if (chunk) {
-			chunk->next = next_chunk;
-			next_chunk->head = chunk->head;
-		} else {
-			next_chunk->head = next_chunk;
-		}
-		chunk = next_chunk;
-		chunk->size = recv_len;
-		recv_bytes += recv_len;
-
-		res = h.tls_socket->recv(h.tls_ctx, &chunk->data, &chunk->size,
-					 TEE_TIMEOUT_INFINITE);
+	// Receive header
+	while (header_length == 0) {
+		size_t recv = 0;
+		res = receive_chunk(&chunk, &recv);
 		if (res != TEE_SUCCESS) {
-			EMSG("Couldn't get recv data: %x", res);
+			EMSG("Could not receive chunk.");
 			return res;
 		}
-		DMSG("Received chunk %d of size %u", no_chunk, chunk->size);
+		bytes += recv;
 
-		if (!header_length) {
-			header_length = find_header_end(chunk->head);
-			if (header_length > 0) {
-				content_length = find_content_length(
-					chunk->head, header_length);
-				if (content_length == 0) {
-					EMSG("No \"Content-Length\" found in header");
-					return TEE_ERROR_ITEM_NOT_FOUND;
-				}
+		header_length = find_header_end(chunk->head);
+		if (header_length > 0) {
+			content_length =
+				find_content_length(chunk->head, header_length);
+			if (content_length == 0) {
+				EMSG("No \"Content-Length\" found in header");
+				return TEE_ERROR_ITEM_NOT_FOUND;
 			}
 		}
+
+		DMSG("header_length, content_length, recv_bytes");
+		DMSG("%13d, %14d, %10d", header_length, content_length, bytes);
+	}
+
+	// Receive content
+	char *image = TEE_Malloc(content_length, TEE_MALLOC_FILL_ZERO);
+	if (!image) {
+		EMSG("Could not allocate enough space for content.");
+		return res;
+	}
+
+	bytes -= header_length;
+	if (bytes > 0) {
+		// Already received part of content.
+		// As the above loop ends immediatly after receiving the header
+		// end, all content that we have received is in one chunck only.
+		// This means we do not have to cross chunk edges.
+		TEE_MemMove(image, &(chunk->data[chunk->size - bytes]), bytes);
+	}
+
+	while (bytes < content_length) {
+		size_t recv;
+		res = receive_data(&image[bytes], &recv);
+		if (res != TEE_SUCCESS) {
+			EMSG("Could not receive chunk.");
+			return res;
+		}
+		bytes += recv;
 
 		/* Print chunk */
 		// size_t buffer_len = 49;
@@ -614,11 +669,58 @@ static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
 		// 	DMSG("%s", buffer);
 		// }
 
-		no_chunk++;
-		DMSG("header_length, content_length, recv_bytes");
-		DMSG("%13d, %14d, %10d", header_length, content_length,
-		     recv_bytes);
+		if ((bytes * 100 / content_length) % 10 == 0) {
+			DMSG("header_length, content_length, recv_bytes");
+			DMSG("%13d, %14d, %10d", header_length, content_length,
+			     bytes);
+		}
 	}
+
+	static const TEE_UUID system_uuid = PTA_UPDATER_UUID;
+	uint32_t nparam_types =
+		TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT, TEE_PARAM_TYPE_NONE,
+				TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE);
+	TEE_Param nparams[TEE_NUM_PARAMS] = {};
+	TEE_TASessionHandle sess;
+	uint32_t ret_orig = 0;
+
+	nparams[0].value.a = (uint32_t)image;
+	nparams[0].value.b = (uint32_t)content_length;
+
+	res = TEE_OpenTASession(&system_uuid, TEE_TIMEOUT_INFINITE, 0, NULL,
+				&sess, &ret_orig);
+	if (res != TEE_SUCCESS) {
+		EMSG("Can't open session to updater PTA: 0x%08x, 0x%08x", res,
+		     ret_orig);
+		return res;
+	}
+
+	// res = TEE_InvokeTACommand(sess, TEE_TIMEOUT_INFINITE,
+	// 			  PTA_UPDATER_CMD_ICREASE_MEM, 0, NULL,
+	// 			  &ret_orig);
+	// if (res != TEE_SUCCESS)
+	// 	EMSG("Can't invoke updater PTA: 0x%08x, 0x%08x", res, ret_orig);
+
+	size_t buffer_len = 80;
+	char buffer[buffer_len + 1];
+	uint8_t *img = image;
+	size_t c;
+	size_t i;
+	for (i = 0; i < 20; i++) {
+		memset(buffer, 0, buffer_len + 1);
+		for (c = 0; c < buffer_len; c += 3) {
+			snprintf(&buffer[c], 4, "%02x ", *img++);
+		}
+		DMSG("%s", buffer);
+	}
+
+	res = TEE_InvokeTACommand(sess, TEE_TIMEOUT_INFINITE,
+				  PTA_UPDATER_CMD_UPDATE, nparam_types, nparams,
+				  &ret_orig);
+	if (res != TEE_SUCCESS)
+		EMSG("Can't invoke updater PTA: 0x%08x, 0x%08x", res, ret_orig);
+
+	TEE_CloseTASession(sess);
 
 	chunk = chunk->head;
 	while (chunk) {
@@ -626,6 +728,7 @@ static TEE_Result get_ssl_data(uint32_t __maybe_unused param_types,
 		chunk = tmp->next;
 		TEE_Free(tmp);
 	}
+	TEE_Free(image);
 
 	return res;
 }
